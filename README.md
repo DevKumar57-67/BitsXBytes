@@ -262,6 +262,17 @@ HTTPS, and configure the exact frontend origin in both `CORS_ALLOWED_ORIGINS`
 and `CSRF_TRUSTED_ORIGINS`. The refresh cookie is Secure whenever Django
 `DEBUG` is disabled.
 
+Password reset requests always return the same response. For an active account
+with a usable password, Django sends a reset link to the configured frontend
+using its expiring, single-use password-reset token. The reset page submits the
+UID, token, and confirmed new password to the API. Django applies the configured
+password validators, consumes the token by updating the password, blacklists
+the account's outstanding refresh tokens, and expires the browser's refresh
+cookie. Access tokens are bound to a keyed password-version fingerprint, so
+tokens issued before a password reset are rejected immediately. In development,
+reset emails are written only to the local Django console; production should
+configure SMTP credentials through environment variables.
+
 ```text
                     AUTHENTICATION
                            │

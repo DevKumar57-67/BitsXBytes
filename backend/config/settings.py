@@ -146,19 +146,47 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 
-# Email
-# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
-
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend" if DEBUG
+    else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "25" if DEBUG else "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", str(not DEBUG)).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
 }
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise ImproperlyConfigured("EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be enabled.")
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.getenv(
+    "DEFAULT_FROM_EMAIL",
+    "BitsXBytes <noreply@localhost>" if DEBUG else "BitsXBytes <noreply@example.com>",
+)
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "http://127.0.0.1:3000" if DEBUG else "",
+).rstrip("/")
+if not FRONTEND_URL:
+    raise ImproperlyConfigured("FRONTEND_URL must be set when DEBUG is disabled.")
+if not DEBUG and not FRONTEND_URL.startswith("https://"):
+    raise ImproperlyConfigured("FRONTEND_URL must use HTTPS when DEBUG is disabled.")
+PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "3600"))
 
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "authentication.backends.PasswordAwareJWTAuthentication",
     ),
 }
 

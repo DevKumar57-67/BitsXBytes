@@ -162,6 +162,31 @@ export async function register(
   });
 }
 
+export async function requestPasswordReset(email: string): Promise<void> {
+  await apiRequest<{ detail: string }>("/api/auth/password-reset/", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function confirmPasswordReset(
+  uid: string,
+  token: string,
+  newPassword: string,
+  confirmPassword: string
+): Promise<void> {
+  await apiRequest<{ detail: string }>("/api/auth/password-reset/confirm/", {
+    method: "POST",
+    body: JSON.stringify({
+      uid,
+      token,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    }),
+  });
+  clearAuth();
+}
+
 export function getCurrentUser(): Promise<User> {
   return authenticatedRequest<User>("/api/auth/me/");
 }

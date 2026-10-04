@@ -24,6 +24,7 @@ type AuthContextValue = {
   signIn: (username: string, password: string) => Promise<void>;
   signUp: (username: string, email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  clearSession: () => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -90,8 +91,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function clearSession() {
+    clearAuth();
+    setUser(null);
+    setStatus("unauthenticated");
+  }
+
   return (
-    <AuthContext.Provider value={{ user, status, signIn, signUp, signOut }}>
+    <AuthContext.Provider
+      value={{ user, status, signIn, signUp, signOut, clearSession }}
+    >
       {children}
     </AuthContext.Provider>
   );

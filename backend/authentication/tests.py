@@ -1,9 +1,14 @@
 from datetime import timedelta
+from urllib.parse import parse_qs, urlsplit
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import default_token_generator
 from django.conf import settings
+from django.core import mail
 from django.test import override_settings
 from django.urls import reverse
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
@@ -20,6 +25,8 @@ class AuthenticationFlowTests(APITestCase):
 		self.refresh_url = reverse("token_refresh")
 		self.me_url = reverse("me")
 		self.logout_url = reverse("logout")
+		self.password_reset_url = reverse("password_reset")
+		self.password_reset_confirm_url = reverse("password_reset_confirm")
 		self.password = "S3cure!Raven-Tree-419"
 
 	def create_user(self, username="student", email="student@example.com"):
@@ -222,7 +229,7 @@ class AuthenticationFlowTests(APITestCase):
 
 	def test_refresh_returns_a_new_access_token(self):
 		self.create_user()
-		tokens = self.login()
+		self.login()
 
 		refresh_response = self.client.post(self.refresh_url, {})
 		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
@@ -262,7 +269,7 @@ class AuthenticationFlowTests(APITestCase):
 
 	def test_logout_blacklists_valid_refresh_token(self):
 		self.create_user()
-		tokens = self.login()
+		self.login()
 		logout_response = self.client.post(self.logout_url, {})
 		self.assertEqual(logout_response.status_code, status.HTTP_205_RESET_CONTENT)
 		self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, logout_response.cookies)
@@ -316,6 +323,187 @@ class AuthenticationFlowTests(APITestCase):
 		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 		self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, response.cookies)
 
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_password_reset_request_sends_link_for_existing_user(self):
+		user = self.create_user()
+
+		response = self.client.post(
+			self.password_reset_url,
+			{"email": user.email},
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(
+			response.data,
+			{
+				"detail": (
+					"If an account with that email exists, password reset "
+					"instructions have been sent."
+				)
+			},
+		)
+		self.assertEqual(len(mail.outbox), 1)
+		self.assertEqual(mail.outbox[0].to, [user.email])
+		self.assertIn("/reset-password#uid=", mail.outbox[0].body)
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_link_from_reset_email_completes_password_reset(self):
+		user = self.create_user()
+		self.client.post(self.password_reset_url, {"email": user.email})
+		reset_link = next(
+			word for word in mail.outbox[0].body.split() if "/reset-password#" in word
+		)
+		params = parse_qs(urlsplit(reset_link).fragment)
+		new_password = "New-S3cure!Raven-Tree-592"
+
+		response = self.client.post(
+			self.password_reset_confirm_url,
+			{
+				"uid": params["uid"][0],
+				"token": params["token"][0],
+				"new_password": new_password,
+				"confirm_password": new_password,
+			},
+		)
+
+		user.refresh_from_db()
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertTrue(user.check_password(new_password))
+		self.assertNotIn(params["token"][0], str(response.data))
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_password_reset_response_is_same_for_existing_and_unknown_email(self):
+		self.create_user()
+		existing_response = self.client.post(
+			self.password_reset_url,
+			{"email": "student@example.com"},
+		)
+		unknown_response = self.client.post(
+			self.password_reset_url,
+			{"email": "missing@example.com"},
+		)
+
+		self.assertEqual(existing_response.status_code, status.HTTP_200_OK)
+		self.assertEqual(unknown_response.status_code, status.HTTP_200_OK)
+		self.assertEqual(existing_response.data, unknown_response.data)
+		self.assertEqual(len(mail.outbox), 1)
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_password_reset_request_malformed_email_is_generic(self):
+		response = self.client.post(
+			self.password_reset_url,
+			{"email": "not-an-email"},
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(len(mail.outbox), 0)
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_password_reset_skips_inactive_and_unusable_password_accounts(self):
+		inactive = self.create_user()
+		inactive.is_active = False
+		inactive.save(update_fields=["is_active"])
+		unusable = self.create_user(username="unusable", email="unusable@example.com")
+		unusable.set_unusable_password()
+		unusable.save(update_fields=["password"])
+
+		for email in (inactive.email, unusable.email):
+			response = self.client.post(self.password_reset_url, {"email": email})
+			self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+		self.assertEqual(len(mail.outbox), 0)
+
+	def password_reset_data(self, user, password="New-S3cure!Raven-Tree-592"):
+		return {
+			"uid": urlsafe_base64_encode(force_bytes(user.pk)),
+			"token": default_token_generator.make_token(user),
+			"new_password": password,
+			"confirm_password": password,
+		}
+
+	def test_password_reset_changes_password_and_token_cannot_be_reused(self):
+		user = self.create_user()
+		data = self.password_reset_data(user)
+
+		response = self.client.post(self.password_reset_confirm_url, data)
+		reuse_response = self.client.post(self.password_reset_confirm_url, data)
+
+		user.refresh_from_db()
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertTrue(user.check_password(data["new_password"]))
+		self.assertEqual(reuse_response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertEqual(
+			reuse_response.data["detail"],
+			"This reset link or password is invalid.",
+		)
+
+	def test_password_reset_rejects_mismatched_confirmation(self):
+		user = self.create_user()
+		data = self.password_reset_data(user)
+		data["confirm_password"] = "Different-S3cure!Raven-592"
+
+		response = self.client.post(self.password_reset_confirm_url, data)
+
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertEqual(response.data["detail"], "This reset link or password is invalid.")
+
+	def test_password_reset_rejects_invalid_uid_and_token(self):
+		user = self.create_user()
+		for data in (
+			{
+				**self.password_reset_data(user),
+				"uid": "not-a-valid-user-id",
+			},
+			{
+				**self.password_reset_data(user),
+				"token": "invalid-token",
+			},
+		):
+			response = self.client.post(self.password_reset_confirm_url, data)
+			self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+			self.assertEqual(response.data["detail"], "This reset link or password is invalid.")
+
+	def test_password_reset_rejects_expired_token(self):
+		user = self.create_user()
+		data = self.password_reset_data(user)
+		with override_settings(PASSWORD_RESET_TIMEOUT=-1):
+			response = self.client.post(self.password_reset_confirm_url, data)
+
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertEqual(response.data["detail"], "This reset link or password is invalid.")
+
+	def test_password_reset_applies_django_password_validators(self):
+		user = self.create_user()
+		data = self.password_reset_data(user, password="password")
+
+		response = self.client.post(self.password_reset_confirm_url, data)
+
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertEqual(response.data["detail"], "This reset link or password is invalid.")
+		user.refresh_from_db()
+		self.assertTrue(user.check_password(self.password))
+
+	def test_password_reset_blacklists_existing_refresh_tokens(self):
+		user = self.create_user()
+		tokens = self.login()
+		data = self.password_reset_data(user)
+		self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+		authenticated_before_reset = self.client.get(self.me_url)
+
+		reset_response = self.client.post(self.password_reset_confirm_url, data)
+		self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = tokens["refresh"]
+		refresh_response = self.client.post(self.refresh_url, {})
+		authenticated_after_reset = self.client.get(self.me_url)
+
+		self.assertEqual(authenticated_before_reset.status_code, status.HTTP_200_OK)
+		self.assertEqual(reset_response.status_code, status.HTTP_200_OK)
+		self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+		self.assertEqual(
+			authenticated_after_reset.status_code,
+			status.HTTP_401_UNAUTHORIZED,
+		)
+		self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, reset_response.cookies)
+
 
 class AuthenticationCsrfTests(APITestCase):
 	def setUp(self):
@@ -345,6 +533,24 @@ class AuthenticationCsrfTests(APITestCase):
 		)
 
 		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_password_reset_endpoints_require_csrf_token(self):
+		request_response = self.client.post(
+			reverse("password_reset"),
+			{"email": self.user.email},
+		)
+		confirm_response = self.client.post(
+			reverse("password_reset_confirm"),
+			{
+				"uid": urlsafe_base64_encode(force_bytes(self.user.pk)),
+				"token": default_token_generator.make_token(self.user),
+				"new_password": "New-S3cure!Raven-Tree-592",
+				"confirm_password": "New-S3cure!Raven-Tree-592",
+			},
+		)
+
+		self.assertEqual(request_response.status_code, status.HTTP_403_FORBIDDEN)
+		self.assertEqual(confirm_response.status_code, status.HTTP_403_FORBIDDEN)
 
 	def test_logout_requires_csrf_token(self):
 		csrf_response = self.client.get(reverse("csrf"))

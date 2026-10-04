@@ -1,6 +1,15 @@
+import logging
+from urllib.parse import urlencode
+
+from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import default_token_generator
 from django.conf import settings
+from django.core.mail import send_mail
+from django.db import transaction
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -8,10 +17,19 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 
-from .serializers import RegisterSerializer
+from .serializers import (
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
+    PasswordAwareTokenObtainPairSerializer,
+    RegisterSerializer,
+)
+
+logger = logging.getLogger(__name__)
+User = get_user_model()
 
 
 def set_refresh_cookie(response, token):
@@ -45,6 +63,86 @@ class RegisterView(generics.CreateAPIView):
     permission_classes = [AllowAny]
 
 
+@method_decorator(csrf_protect, name="dispatch")
+class PasswordResetRequestView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = PasswordResetRequestSerializer
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        if serializer.is_valid():
+            self._send_reset_email(serializer.validated_data["email"])
+
+        return Response(
+            {
+                "detail": (
+                    "If an account with that email exists, password reset "
+                    "instructions have been sent."
+                )
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @staticmethod
+    def _send_reset_email(email):
+        users = User._default_manager.filter(
+            email__iexact=email,
+            is_active=True,
+        )
+        for user in users:
+            if not user.has_usable_password():
+                continue
+
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+            query = urlencode({"uid": uid, "token": token})
+            reset_url = f"{settings.FRONTEND_URL}/reset-password#{query}"
+            message = (
+                "We received a request to reset your BitsXBytes password.\n\n"
+                f"Use this link within {settings.PASSWORD_RESET_TIMEOUT // 60} "
+                f"minutes to choose a new password:\n{reset_url}\n\n"
+                "If you did not request this, you can safely ignore this email."
+            )
+
+            try:
+                send_mail(
+                    subject="Reset your BitsXBytes password",
+                    message=message,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=True,
+                )
+            except Exception:
+                logger.error("Password reset email delivery failed.")
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class PasswordResetConfirmView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "This reset link or password is invalid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = serializer.validated_data["user"]
+        with transaction.atomic():
+            user.set_password(serializer.validated_data["new_password"])
+            user.save(update_fields=["password"])
+            outstanding_tokens = OutstandingToken.objects.filter(user=user)
+            for outstanding in outstanding_tokens:
+                BlacklistedToken.objects.get_or_create(token=outstanding)
+
+        response = Response(
+            {"detail": "Your password has been reset. Please sign in."},
+            status=status.HTTP_200_OK,
+        )
+        return clear_refresh_cookie(response)
+
+
 @method_decorator(ensure_csrf_cookie, name="dispatch")
 class CsrfTokenView(APIView):
     permission_classes = [AllowAny]
@@ -54,20 +152,22 @@ class CsrfTokenView(APIView):
 
 
 @method_decorator(csrf_protect, name="dispatch")
-class CookieTokenObtainPairView(TokenObtainPairView):
-    def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
-        if response.status_code != status.HTTP_200_OK:
-            return response
+class CookieTokenObtainPairView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = PasswordAwareTokenObtainPairSerializer
 
-        refresh_token = response.data["refresh"]
-        response.data = {"access": response.data["access"]}
-        return set_refresh_cookie(response, refresh_token)
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        tokens = serializer.validated_data
+
+        response = Response({"access": tokens["access"]})
+        return set_refresh_cookie(response, tokens["refresh"])
 
 
 @method_decorator(csrf_protect, name="dispatch")
 class CookieTokenRefreshView(TokenRefreshView):
-    def post(self, request, *args, **kwargs):
+    def post(self, request):
         refresh_token = request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
         if not refresh_token:
             response = Response(
