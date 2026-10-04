@@ -13,7 +13,6 @@ import {
   login,
   logout,
   register as registerAccount,
-  saveAuth,
   type User,
 } from "@/lib/api";
 
@@ -57,8 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function signIn(username: string, password: string) {
     setStatus("loading");
     try {
-      const tokens = await login(username, password);
-      saveAuth(tokens);
+      await login(username, password);
       const currentUser = await getCurrentUser();
       setUser(currentUser);
       setStatus("authenticated");
@@ -86,8 +84,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function signOut() {
     try {
       await logout();
-    } catch {
-      clearAuth();
     } finally {
       setUser(null);
       setStatus("unauthenticated");

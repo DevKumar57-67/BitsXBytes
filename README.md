@@ -246,6 +246,22 @@ PostgreSQL
 
 Authentication is being designed as an independent foundation of the platform.
 
+The current web authentication flow uses Django REST Framework and SimpleJWT.
+Login returns a short-lived access token to the frontend, where it is kept in
+memory only. The refresh token is issued only as the `bxb_refresh` HttpOnly
+cookie; it is never returned in JSON or stored in browser storage. Reloading
+the app refreshes the access token through that cookie. Registration, login,
+refresh, and logout require a CSRF token from `/api/auth/csrf/` and send it in
+the `X-CSRFToken` header. Refresh rotates and blacklists old refresh tokens;
+logout blacklists the cookie token and expires the cookie.
+
+The frontend and API use credentialed CORS with explicit allowed origins. Keep
+them on the same site and use `AUTH_COOKIE_SAMESITE=Lax` where possible. For a
+cross-site deployment, set `AUTH_COOKIE_SAMESITE=None`, serve both origins over
+HTTPS, and configure the exact frontend origin in both `CORS_ALLOWED_ORIGINS`
+and `CSRF_TRUSTED_ORIGINS`. The refresh cookie is Secure whenever Django
+`DEBUG` is disabled.
+
 ```text
                     AUTHENTICATION
                            │

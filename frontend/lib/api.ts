@@ -1,19 +1,16 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
-const AUTH_STORAGE_KEY = "bxb-auth";
+const LEGACY_AUTH_STORAGE_KEY = "bxb-auth";
 
-export type AuthTokens = {
-  access: string;
-  refresh: string;
-};
+let accessToken: string | null = null;
+let csrfToken: string | null = null;
+let refreshInProgress: Promise<string> | null = null;
 
 export type User = {
   username: string;
   email: string;
 };
 
-type RequestOptions = RequestInit & {
-  token?: string;
-};
+type RequestOptions = RequestInit;
 
 class ApiError extends Error {
   constructor(
@@ -44,15 +41,23 @@ export async function apiRequest<T>(
   endpoint: string,
   options: RequestOptions = {}
 ): Promise<T> {
-  const { token, ...fetchOptions } = options;
-  const headers = new Headers(fetchOptions.headers);
-  headers.set("Content-Type", "application/json");
+  const headers = new Headers(options.headers);
+  if (
+    options.body &&
+    !(typeof FormData !== "undefined" && options.body instanceof FormData)
+  ) {
+    headers.set("Content-Type", "application/json");
+  }
 
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const method = (options.method ?? "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes(method)) {
+    headers.set("X-CSRFToken", await getCsrfToken());
+  }
 
   const response = await fetch(`${API_URL}${endpoint}`, {
-    ...fetchOptions,
+    ...options,
     headers,
+    credentials: "include",
   });
   const data = await response.json().catch(() => null);
 
@@ -66,75 +71,43 @@ export async function apiRequest<T>(
   return data as T;
 }
 
-export function hasStoredAuth(): boolean {
-  return Boolean(readStoredAuth());
-}
-
-export function saveAuth(tokens: AuthTokens): void {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(tokens));
-  }
-}
-
 export function clearAuth(): void {
-  if (typeof window !== "undefined") {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
-  }
-}
-
-function readStoredAuth(): AuthTokens | null {
-  if (typeof window === "undefined") return null;
-
+  accessToken = null;
+  if (typeof window === "undefined") return;
   try {
-    const value: unknown = JSON.parse(
-      window.localStorage.getItem(AUTH_STORAGE_KEY) ?? "null"
-    );
-    if (
-      value &&
-      typeof value === "object" &&
-      "access" in value &&
-      "refresh" in value &&
-      typeof value.access === "string" &&
-      typeof value.refresh === "string"
-    ) {
-      return { access: value.access, refresh: value.refresh };
-    }
+    window.localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
   } catch {
-    clearAuth();
+    // Authentication no longer depends on browser storage.
   }
-
-  return null;
 }
 
-let refreshInProgress: Promise<AuthTokens> | null = null;
+if (typeof window !== "undefined") {
+  clearAuth();
+}
 
-async function refreshStoredAuth(): Promise<AuthTokens> {
+async function getCsrfToken(): Promise<string> {
+  if (csrfToken) return csrfToken;
+
+  const result = await apiRequest<{ csrfToken: string }>("/api/auth/csrf/");
+  csrfToken = result.csrfToken;
+  return csrfToken;
+}
+
+async function refreshAccessToken(): Promise<string> {
   if (refreshInProgress) return refreshInProgress;
 
-  const refreshPromise = (async (): Promise<AuthTokens> => {
-    const current = readStoredAuth();
-    if (!current) {
-      throw new Error("Your session has expired. Please sign in again.");
-    }
-
-    const refreshed = await apiRequest<Partial<AuthTokens>>(
-      "/api/auth/refresh/",
-      {
-        method: "POST",
-        body: JSON.stringify({ refresh: current.refresh }),
-      }
-    );
-    if (!refreshed.access) {
-      throw new Error("Your session has expired. Please sign in again.");
-    }
-
-    const next: AuthTokens = {
-      access: refreshed.access,
-      refresh: refreshed.refresh ?? current.refresh,
-    };
-    saveAuth(next);
-    return next;
-  })();
+  const refreshPromise = apiRequest<{ access: string }>("/api/auth/refresh/", {
+    method: "POST",
+    body: JSON.stringify({}),
+  })
+    .then(({ access }) => {
+      accessToken = access;
+      return access;
+    })
+    .catch((error: unknown) => {
+      accessToken = null;
+      throw error;
+    });
 
   const sharedRefresh = refreshPromise.finally(() => {
     refreshInProgress = null;
@@ -143,36 +116,39 @@ async function refreshStoredAuth(): Promise<AuthTokens> {
   return sharedRefresh;
 }
 
+async function requestWithAccess<T>(
+  endpoint: string,
+  access: string,
+  options: RequestOptions
+): Promise<T> {
+  const headers = new Headers(options.headers);
+  headers.set("Authorization", `Bearer ${access}`);
+  return apiRequest<T>(endpoint, { ...options, headers });
+}
+
 export async function authenticatedRequest<T>(
   endpoint: string,
-  options: Omit<RequestOptions, "token"> = {}
+  options: RequestOptions = {}
 ): Promise<T> {
-  const current = readStoredAuth();
-  if (!current) throw new Error("Please sign in to continue.");
+  const currentAccess = accessToken ?? await refreshAccessToken();
 
   try {
-    return await apiRequest<T>(endpoint, { ...options, token: current.access });
+    return await requestWithAccess<T>(endpoint, currentAccess, options);
   } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 401) throw error;
   }
 
-  try {
-    const refreshed = await refreshStoredAuth();
-    return await apiRequest<T>(endpoint, { ...options, token: refreshed.access });
-  } catch (error) {
-    clearAuth();
-    throw error;
-  }
+  accessToken = null;
+  const refreshedAccess = await refreshAccessToken();
+  return requestWithAccess<T>(endpoint, refreshedAccess, options);
 }
 
-export async function login(
-  username: string,
-  password: string
-): Promise<AuthTokens> {
-  return apiRequest<AuthTokens>("/api/auth/login/", {
+export async function login(username: string, password: string): Promise<void> {
+  const result = await apiRequest<{ access: string }>("/api/auth/login/", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
+  accessToken = result.access;
 }
 
 export async function register(
@@ -191,11 +167,12 @@ export function getCurrentUser(): Promise<User> {
 }
 
 export async function logout(): Promise<void> {
-  const tokens = readStoredAuth();
-  if (!tokens) return;
-
-  await authenticatedRequest<void>("/api/auth/logout/", {
-    method: "POST",
-    body: JSON.stringify({ refresh: tokens.refresh }),
-  });
+  try {
+    await apiRequest<void>("/api/auth/logout/", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  } finally {
+    clearAuth();
+  }
 }

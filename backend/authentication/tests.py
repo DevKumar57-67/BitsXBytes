@@ -1,7 +1,12 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
+from django.conf import settings
+from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 User = get_user_model()
 
@@ -31,8 +36,19 @@ class AuthenticationFlowTests(APITestCase):
 		)
 		self.assertEqual(response.status_code, status.HTTP_200_OK)
 		self.assertIn("access", response.data)
-		self.assertIn("refresh", response.data)
-		return response.data
+		self.assertNotIn("refresh", response.data)
+		refresh_cookie = response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]
+		self.assertTrue(refresh_cookie["httponly"])
+		self.assertEqual(refresh_cookie["samesite"], settings.AUTH_COOKIE_SAMESITE)
+		self.assertEqual(refresh_cookie["path"], settings.AUTH_REFRESH_COOKIE_PATH)
+		self.assertEqual(
+			bool(refresh_cookie["secure"]),
+			settings.AUTH_COOKIE_SECURE,
+		)
+		return {
+			"access": response.data["access"],
+			"refresh": refresh_cookie.value,
+		}
 
 	def test_register_creates_user_without_returning_password(self):
 		response = self.client.post(
@@ -139,12 +155,22 @@ class AuthenticationFlowTests(APITestCase):
 
 		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-	def test_successful_login_returns_access_and_refresh_tokens(self):
+	def test_successful_login_returns_access_and_sets_httponly_refresh_cookie(self):
 		self.create_user()
 		tokens = self.login()
 
 		self.assertTrue(tokens["access"])
 		self.assertTrue(tokens["refresh"])
+
+	@override_settings(AUTH_COOKIE_SECURE=True, AUTH_COOKIE_SAMESITE="None")
+	def test_cross_site_production_cookie_is_secure(self):
+		self.create_user()
+
+		self.login()
+
+		refresh_cookie = self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME]
+		self.assertTrue(refresh_cookie["secure"])
+		self.assertEqual(refresh_cookie["samesite"], "None")
 
 	def test_me_with_valid_jwt_returns_current_user(self):
 		self.create_user()
@@ -175,76 +201,171 @@ class AuthenticationFlowTests(APITestCase):
 
 		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-	def test_logout_cannot_blacklist_another_users_refresh_token(self):
+	def test_logout_only_blacklists_the_refresh_cookie_not_a_body_token(self):
 		self.create_user()
 		self.create_user(username="other", email="other@example.com")
 		user_tokens = self.login()
 		other_user_tokens = self.login(username="other")
-		self.client.credentials(
-			HTTP_AUTHORIZATION=f"Bearer {user_tokens['access']}"
-		)
+		self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = user_tokens["refresh"]
 
 		response = self.client.post(
 			self.logout_url,
 			{"refresh": other_user_tokens["refresh"]},
 		)
+		self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = other_user_tokens["refresh"]
 		refresh_response = self.client.post(
 			self.refresh_url,
-			{"refresh": other_user_tokens["refresh"]},
 		)
 
-		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+		self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
 		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
 
 	def test_refresh_returns_a_new_access_token(self):
 		self.create_user()
 		tokens = self.login()
 
-		refresh_response = self.client.post(
-			self.refresh_url,
-			{"refresh": tokens["refresh"]},
-		)
+		refresh_response = self.client.post(self.refresh_url, {})
 		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
 		self.assertIn("access", refresh_response.data)
+		self.assertNotIn("refresh", refresh_response.data)
+		self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, refresh_response.cookies)
+
+	def test_expired_access_token_can_be_replaced_from_refresh_cookie(self):
+		self.create_user()
+		tokens = self.login()
+		expired_access = AccessToken(tokens["access"])
+		expired_access.set_exp(lifetime=timedelta(seconds=-1))
+		self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {expired_access}")
+
+		expired_me_response = self.client.get(self.me_url)
+		refresh_response = self.client.post(self.refresh_url, {})
+		self.client.credentials(
+			HTTP_AUTHORIZATION=f"Bearer {refresh_response.data['access']}"
+		)
+		refreshed_me_response = self.client.get(self.me_url)
+
+		self.assertEqual(expired_me_response.status_code, status.HTTP_401_UNAUTHORIZED)
+		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+		self.assertEqual(refreshed_me_response.status_code, status.HTTP_200_OK)
 
 	def test_refresh_rotation_blacklists_previous_refresh_token(self):
 		self.create_user()
 		tokens = self.login()
 
-		refresh_response = self.client.post(
-			self.refresh_url,
-			{"refresh": tokens["refresh"]},
-		)
-		reuse_response = self.client.post(
-			self.refresh_url,
-			{"refresh": tokens["refresh"]},
-		)
+		refresh_response = self.client.post(self.refresh_url, {})
+		self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = tokens["refresh"]
+		reuse_response = self.client.post(self.refresh_url, {})
 
 		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
-		self.assertIn("refresh", refresh_response.data)
+		self.assertNotIn("refresh", refresh_response.data)
 		self.assertEqual(reuse_response.status_code, status.HTTP_401_UNAUTHORIZED)
 
 	def test_logout_blacklists_valid_refresh_token(self):
 		self.create_user()
 		tokens = self.login()
-		self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
-		logout_response = self.client.post(
-			self.logout_url,
-			{"refresh": tokens["refresh"]},
-		)
+		logout_response = self.client.post(self.logout_url, {})
 		self.assertEqual(logout_response.status_code, status.HTTP_205_RESET_CONTENT)
+		self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, logout_response.cookies)
+		self.assertEqual(
+			int(logout_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["max-age"]),
+			0,
+		)
+		self.assertTrue(
+			logout_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["httponly"]
+		)
+		self.assertEqual(
+			bool(logout_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["secure"]),
+			settings.AUTH_COOKIE_SECURE,
+		)
 
 	def test_blacklisted_refresh_token_cannot_be_used(self):
 		self.create_user()
 		tokens = self.login()
 		self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
-		self.client.post(self.logout_url, {"refresh": tokens["refresh"]})
+		self.client.post(self.logout_url, {})
+		self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = tokens["refresh"]
 
-		revoked_refresh_response = self.client.post(
-			self.refresh_url,
-			{"refresh": tokens["refresh"]},
-		)
+		revoked_refresh_response = self.client.post(self.refresh_url, {})
 		self.assertEqual(
 			revoked_refresh_response.status_code,
 			status.HTTP_401_UNAUTHORIZED,
 		)
+
+	def test_invalid_refresh_cookie_is_cleared(self):
+		response = self.client.post(
+			self.refresh_url,
+			HTTP_COOKIE=f"{settings.AUTH_REFRESH_COOKIE_NAME}=invalid",
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+		self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, response.cookies)
+		self.assertEqual(
+			int(response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["max-age"]),
+			0,
+		)
+
+	def test_expired_refresh_cookie_is_cleared(self):
+		self.create_user()
+		tokens = self.login()
+		expired_refresh = RefreshToken(tokens["refresh"])
+		expired_refresh.set_exp(lifetime=timedelta(seconds=-1))
+		self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = str(expired_refresh)
+
+		response = self.client.post(self.refresh_url, {})
+
+		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+		self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, response.cookies)
+
+
+class AuthenticationCsrfTests(APITestCase):
+	def setUp(self):
+		self.client = APIClient(enforce_csrf_checks=True)
+		self.user = User.objects.create_user(
+			username="csrf-student",
+			email="csrf-student@example.com",
+			password="S3cure!Raven-Tree-419",
+		)
+
+	def test_login_requires_csrf_token(self):
+		response = self.client.post(
+			reverse("login"),
+			{"username": self.user.username, "password": "S3cure!Raven-Tree-419"},
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_registration_requires_csrf_token(self):
+		response = self.client.post(
+			reverse("register"),
+			{
+				"username": "blocked-registration",
+				"email": "blocked@example.com",
+				"password": "S3cure!Raven-Tree-419",
+			},
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_logout_requires_csrf_token(self):
+		csrf_response = self.client.get(reverse("csrf"))
+		login_response = self.client.post(
+			reverse("login"),
+			{"username": self.user.username, "password": "S3cure!Raven-Tree-419"},
+			HTTP_X_CSRFTOKEN=csrf_response.data["csrfToken"],
+		)
+		logout_response = self.client.post(reverse("logout"))
+
+		self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+		self.assertEqual(logout_response.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_csrf_endpoint_allows_login_with_csrf_token(self):
+		csrf_response = self.client.get(reverse("csrf"))
+		response = self.client.post(
+			reverse("login"),
+			{"username": self.user.username, "password": "S3cure!Raven-Tree-419"},
+			HTTP_X_CSRFTOKEN=csrf_response.data["csrfToken"],
+		)
+
+		self.assertEqual(csrf_response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertNotIn("refresh", response.data)

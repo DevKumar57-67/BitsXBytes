@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
@@ -7,6 +8,7 @@ import { useAuth } from "@/lib/auth-context";
 export default function Home() {
   const router = useRouter();
   const { user, status, signOut } = useAuth();
+  const [signOutError, setSignOutError] = useState("");
 
   if (status === "loading") {
     return (
@@ -30,6 +32,11 @@ export default function Home() {
           <p className="mt-3 text-slate-400">
             Build. Connect. Learn. Create.
           </p>
+          {signOutError && (
+            <p role="alert" className="mt-4 text-sm text-red-400">
+              {signOutError}
+            </p>
+          )}
           <div className="mt-8 flex gap-4">
             <Link
               href="/login"
@@ -50,8 +57,15 @@ export default function Home() {
   }
 
   async function handleSignOut() {
-    await signOut();
-    router.replace("/login");
+    setSignOutError("");
+    try {
+      await signOut();
+      router.replace("/login");
+    } catch (error) {
+      setSignOutError(
+        error instanceof Error ? error.message : "Unable to sign out."
+      );
+    }
   }
 
   return (

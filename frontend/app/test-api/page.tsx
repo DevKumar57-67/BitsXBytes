@@ -16,9 +16,7 @@ setError("");
 setLoading(true);
 
 try {
-  const data = await login(username, password);
-
-  console.log("Login successful:", data);
+  await login(username, password);
 
   alert("Login successful!");
 } catch (error) {
@@ -167,7 +165,7 @@ return ( <main className="flex min-h-screen items-center justify-center bg-[#080
 
       {/* Signup */}
       <p className="mt-7 text-center text-sm text-slate-400">
-        Don't have a BxB account?{" "}
+        Don&apos;t have a BxB account?{" "}
         <a
           href="/register"
           className="font-semibold text-[#60A5FA] hover:text-white"

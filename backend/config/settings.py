@@ -166,11 +166,29 @@ CORS_ALLOWED_ORIGINS = _csv_environment_variable(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000",
 )
+CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = _csv_environment_variable(
     "CSRF_TRUSTED_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000",
 )
+
+AUTH_REFRESH_COOKIE_NAME = "bxb_refresh"
+AUTH_REFRESH_COOKIE_PATH = "/api/auth/"
+AUTH_COOKIE_SAMESITE = os.getenv("AUTH_COOKIE_SAMESITE", "Lax").strip()
+if AUTH_COOKIE_SAMESITE not in {"Lax", "Strict", "None"}:
+    raise ImproperlyConfigured(
+        "AUTH_COOKIE_SAMESITE must be one of: Lax, Strict, None."
+    )
+AUTH_COOKIE_SECURE = not DEBUG
+if AUTH_COOKIE_SAMESITE == "None" and not AUTH_COOKIE_SECURE:
+    raise ImproperlyConfigured(
+        "SameSite=None refresh cookies require HTTPS and DEBUG=False."
+    )
+
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SECURE = AUTH_COOKIE_SECURE
+CSRF_COOKIE_SAMESITE = AUTH_COOKIE_SAMESITE
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
