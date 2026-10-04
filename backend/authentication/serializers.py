@@ -71,7 +71,12 @@ class PasswordAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class EmailVerificationSerializer(serializers.Serializer):
-    token = serializers.CharField()
+    email = serializers.EmailField(max_length=254)
+    otp = serializers.RegexField(regex=r"^\d{6}$", max_length=6, min_length=6)
+
+
+class ResendEmailVerificationSerializer(serializers.Serializer):
+    email = serializers.EmailField(max_length=254)
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):

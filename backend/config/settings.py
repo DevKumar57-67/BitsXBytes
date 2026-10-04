@@ -151,7 +151,7 @@ EMAIL_BACKEND = os.getenv(
     "django.core.mail.backends.console.EmailBackend" if DEBUG
     else "django.core.mail.backends.smtp.EmailBackend",
 )
-EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost" if DEBUG else "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "25" if DEBUG else "587"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", str(not DEBUG)).strip().lower() in {
     "1",
@@ -169,10 +169,27 @@ if EMAIL_USE_TLS and EMAIL_USE_SSL:
     raise ImproperlyConfigured("EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be enabled.")
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
 DEFAULT_FROM_EMAIL = os.getenv(
     "DEFAULT_FROM_EMAIL",
-    "BitsXBytes <noreply@localhost>" if DEBUG else "BitsXBytes <noreply@example.com>",
+    "BitsXBytes <noreply@localhost>" if DEBUG else "",
 )
+if (
+    not DEBUG
+    and EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend"
+    and (not EMAIL_HOST or EMAIL_HOST == "localhost")
+):
+    raise ImproperlyConfigured(
+        "EMAIL_HOST must be set to an SMTP server when DEBUG is disabled."
+    )
+if (
+    not DEBUG
+    and EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend"
+    and not DEFAULT_FROM_EMAIL
+):
+    raise ImproperlyConfigured(
+        "DEFAULT_FROM_EMAIL must be set when SMTP is enabled in production."
+    )
 FRONTEND_URL = os.getenv(
     "FRONTEND_URL",
     "http://127.0.0.1:3000" if DEBUG else "",
@@ -182,11 +199,14 @@ if not FRONTEND_URL:
 if not DEBUG and not FRONTEND_URL.startswith("https://"):
     raise ImproperlyConfigured("FRONTEND_URL must use HTTPS when DEBUG is disabled.")
 PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "3600"))
-EMAIL_VERIFICATION_TIMEOUT = int(
-    os.getenv("EMAIL_VERIFICATION_TIMEOUT", "86400")
+EMAIL_VERIFICATION_OTP_TIMEOUT = int(
+    os.getenv("EMAIL_VERIFICATION_OTP_TIMEOUT", "600")
 )
 EMAIL_VERIFICATION_RESEND_INTERVAL = int(
     os.getenv("EMAIL_VERIFICATION_RESEND_INTERVAL", "60")
+)
+EMAIL_VERIFICATION_OTP_MAX_ATTEMPTS = int(
+    os.getenv("EMAIL_VERIFICATION_OTP_MAX_ATTEMPTS", "5")
 )
 
 

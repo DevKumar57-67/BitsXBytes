@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
@@ -13,7 +13,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [verificationRequired, setVerificationRequired] = useState(false);
+  const [verificationComplete, setVerificationComplete] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("verified") === "1") {
+      Promise.resolve().then(() => setVerificationComplete(true));
+    }
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -48,6 +55,15 @@ export default function LoginPage() {
         <p className="mb-8 text-gray-500">
           Sign in to your BitsXBytes account.
         </p>
+
+        {verificationComplete && (
+          <p
+            role="status"
+            className="mb-5 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700"
+          >
+            Email verified successfully. You can now sign in.
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
@@ -92,7 +108,7 @@ export default function LoginPage() {
           {verificationRequired && (
             <p className="text-sm text-gray-600">
               <Link href="/verify-email" className="font-semibold text-blue-600 hover:text-blue-700">
-                Resend verification email
+                Verify or resend your code
               </Link>
             </p>
           )}

@@ -22,7 +22,7 @@ type AuthContextValue = {
   user: User | null;
   status: AuthStatus;
   signIn: (username: string, password: string) => Promise<void>;
-  signUp: (username: string, email: string, password: string) => Promise<void>;
+  signUp: (username: string, email: string, password: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   clearSession: () => void;
 };
@@ -72,10 +72,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function signUp(username: string, email: string, password: string) {
     setStatus("loading");
     try {
-      await registerAccount(username, email, password);
+      const result = await registerAccount(username, email, password);
       clearAuth();
       setUser(null);
       setStatus("unauthenticated");
+      return result.email_sent;
     } catch (error) {
       clearAuth();
       setUser(null);

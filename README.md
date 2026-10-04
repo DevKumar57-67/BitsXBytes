@@ -274,13 +274,27 @@ tokens issued before a password reset are rejected immediately. In development,
 reset emails are written only to the local Django console; production should
 configure SMTP credentials through environment variables.
 
-New registrations start unverified and receive a signed email link that expires
-after `EMAIL_VERIFICATION_TIMEOUT` seconds (24 hours by default). Verification
-is required before login or authenticated API access; existing accounts remain
-verified during the migration. The resend endpoint returns a generic response,
-limits each account to one send per `EMAIL_VERIFICATION_RESEND_INTERVAL`
-seconds, and also applies an IP-based DRF throttle. Development uses Django's
-console email backend, so verification links appear in the backend terminal.
+Email delivery uses Django's configured email backend. Local development
+defaults to the console backend; production defaults to SMTP and requires
+`EMAIL_HOST`, with optional provider credentials in `EMAIL_HOST_USER` and
+`EMAIL_HOST_PASSWORD`. Configure `EMAIL_PORT`, `EMAIL_USE_TLS` or
+`EMAIL_USE_SSL`, `DEFAULT_FROM_EMAIL`, and `EMAIL_TIMEOUT` for the provider.
+Never commit populated `.env` files. To diagnose SMTP, use Django's configured
+backend to send a test message and check the backend logs; credentials and
+verification/reset tokens are not included in the application's delivery logs.
+
+New registrations start unverified and receive a hashed, 6-digit email OTP
+that expires after `EMAIL_VERIFICATION_OTP_TIMEOUT` seconds (10 minutes by
+default). Verification is required before login or authenticated API access;
+existing accounts remain verified during the migration. Each code can be tried
+five times by default. The resend endpoint returns a generic response, limits
+each account to one send per `EMAIL_VERIFICATION_RESEND_INTERVAL` seconds, and
+also applies an IP-based DRF throttle. Development uses Django's console email
+backend, so verification codes appear in the backend terminal.
+Clients submit `{ "email": "...", "otp": "123456" }` to
+`POST /api/auth/verify-otp/`; resend requests use
+`POST /api/auth/resend-otp/` with the email. The earlier verification URL paths
+remain available as aliases for compatibility.
 
 ```text
                     AUTHENTICATION

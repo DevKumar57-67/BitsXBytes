@@ -16,6 +16,8 @@ from .views import (
 urlpatterns = [
     path("csrf/", CsrfTokenView.as_view(), name="csrf"),
     path("register/", RegisterView.as_view(), name="register"),
+    path("verify-otp/", EmailVerificationView.as_view(), name="verify_otp"),
+    path("resend-otp/", ResendEmailVerificationView.as_view(), name="resend_otp"),
     path("verify-email/", EmailVerificationView.as_view(), name="verify_email"),
     path(
         "resend-verification/",

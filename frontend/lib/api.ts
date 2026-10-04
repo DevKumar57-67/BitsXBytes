@@ -155,24 +155,25 @@ export async function register(
   username: string,
   email: string,
   password: string
-): Promise<{ detail: string }> {
-  return apiRequest<{ detail: string }>("/api/auth/register/", {
+): Promise<{ detail: string; email_sent: boolean }> {
+  return apiRequest<{ detail: string; email_sent: boolean }>("/api/auth/register/", {
     method: "POST",
     body: JSON.stringify({ username, email, password }),
   });
 }
 
 export async function verifyEmail(
-  token: string
+  email: string,
+  otp: string
 ): Promise<{ status: "verified" | "already_verified" }> {
-  return apiRequest("/api/auth/verify-email/", {
+  return apiRequest("/api/auth/verify-otp/", {
     method: "POST",
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ email, otp }),
   });
 }
 
 export async function resendEmailVerification(email: string): Promise<void> {
-  await apiRequest<{ detail: string }>("/api/auth/resend-verification/", {
+  await apiRequest<{ detail: string }>("/api/auth/resend-otp/", {
     method: "POST",
     body: JSON.stringify({ email }),
   });
