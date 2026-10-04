@@ -207,6 +207,23 @@ class AuthenticationFlowTests(APITestCase):
 		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
 		self.assertIn("access", refresh_response.data)
 
+	def test_refresh_rotation_blacklists_previous_refresh_token(self):
+		self.create_user()
+		tokens = self.login()
+
+		refresh_response = self.client.post(
+			self.refresh_url,
+			{"refresh": tokens["refresh"]},
+		)
+		reuse_response = self.client.post(
+			self.refresh_url,
+			{"refresh": tokens["refresh"]},
+		)
+
+		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+		self.assertIn("refresh", refresh_response.data)
+		self.assertEqual(reuse_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
 	def test_logout_blacklists_valid_refresh_token(self):
 		self.create_user()
 		tokens = self.login()

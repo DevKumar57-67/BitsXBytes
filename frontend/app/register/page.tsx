@@ -4,6 +4,7 @@ import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import { getPostAuthRedirect } from "@/lib/route-auth";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -22,7 +23,8 @@ export default function RegisterPage() {
 
     try {
       await signUp(username, email, password);
-      router.replace("/");
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.replace(getPostAuthRedirect(next));
     } catch (error) {
       setError(
         error instanceof Error
