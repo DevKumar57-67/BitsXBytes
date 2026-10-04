@@ -3,7 +3,6 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-
 User = get_user_model()
 
 
@@ -29,6 +28,8 @@ class AuthenticationFlowTests(APITestCase):
 			{"username": username, "password": self.password},
 		)
 		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertIn("access", response.data)
+		self.assertIn("refresh", response.data)
 		return response.data
 
 	def test_register_creates_user_without_returning_password(self):
@@ -82,6 +83,11 @@ class AuthenticationFlowTests(APITestCase):
 		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 		self.assertIn("password", response.data)
 
+	def test_me_requires_authentication(self):
+		response = self.client.get(self.me_url)
+
+		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
 	def test_login_and_authenticated_profile(self):
 		self.create_user()
 		tokens = self.login()
@@ -92,6 +98,27 @@ class AuthenticationFlowTests(APITestCase):
 		self.assertEqual(response.status_code, status.HTTP_200_OK)
 		self.assertEqual(response.data["username"], "student")
 		self.assertEqual(response.data["email"], "student@example.com")
+
+	def test_logout_cannot_blacklist_another_users_refresh_token(self):
+		self.create_user()
+		self.create_user(username="other", email="other@example.com")
+		user_tokens = self.login()
+		other_user_tokens = self.login(username="other")
+		self.client.credentials(
+			HTTP_AUTHORIZATION=f"Bearer {user_tokens['access']}"
+		)
+
+		response = self.client.post(
+			self.logout_url,
+			{"refresh": other_user_tokens["refresh"]},
+		)
+		refresh_response = self.client.post(
+			self.refresh_url,
+			{"refresh": other_user_tokens["refresh"]},
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+		self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
 
 	def test_refresh_and_logout_revoke_refresh_token(self):
 		self.create_user()
