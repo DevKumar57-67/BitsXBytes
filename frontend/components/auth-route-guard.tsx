@@ -12,6 +12,7 @@ const PUBLIC_PATHS = new Set([
   "/register",
   "/forgot-password",
   "/reset-password",
+  "/verify-email",
 ]);
 
 export function AuthRouteGuard({ children }: { children: ReactNode }) {

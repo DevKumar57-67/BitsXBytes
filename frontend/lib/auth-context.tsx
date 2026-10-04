@@ -73,7 +73,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("loading");
     try {
       await registerAccount(username, email, password);
-      await signIn(username, password);
+      clearAuth();
+      setUser(null);
+      setStatus("unauthenticated");
     } catch (error) {
       clearAuth();
       setUser(null);

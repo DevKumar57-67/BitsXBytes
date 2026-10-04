@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
@@ -40,6 +41,8 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=validated_data["password"],
         )
 
+        user.email_verified = False
+        user.save(update_fields=["email_verified"])
         return user
 
 
@@ -52,11 +55,23 @@ def get_password_version(user):
 
 
 class PasswordAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        if not self.user.email_verified:
+            raise AuthenticationFailed(
+                "Verify your email address before signing in."
+            )
+        return data
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
         token["password_version"] = get_password_version(user)
         return token
+
+
+class EmailVerificationSerializer(serializers.Serializer):
+    token = serializers.CharField()
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):

@@ -12,12 +12,14 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [verificationRequired, setVerificationRequired] = useState(false);
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     setError("");
+    setVerificationRequired(false);
     setLoading(true);
 
     try {
@@ -25,11 +27,12 @@ export default function LoginPage() {
       const next = new URLSearchParams(window.location.search).get("next");
       router.replace(getPostAuthRedirect(next));
     } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Login failed.";
       setError(
-        error instanceof Error
-          ? error.message
-          : "Login failed."
+        message
       );
+      setVerificationRequired(message.toLowerCase().includes("verify your email"));
     } finally {
       setLoading(false);
     }
@@ -84,6 +87,13 @@ export default function LoginPage() {
           {error && (
             <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
               {error}
+            </p>
+          )}
+          {verificationRequired && (
+            <p className="text-sm text-gray-600">
+              <Link href="/verify-email" className="font-semibold text-blue-600 hover:text-blue-700">
+                Resend verification email
+              </Link>
             </p>
           )}
 

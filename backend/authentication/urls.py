@@ -3,17 +3,25 @@ from .views import (
     CookieTokenObtainPairView,
     CookieTokenRefreshView,
     CsrfTokenView,
+    EmailVerificationView,
     LogoutView,
     MeView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
     RegisterView,
+    ResendEmailVerificationView,
 )
 
 
 urlpatterns = [
     path("csrf/", CsrfTokenView.as_view(), name="csrf"),
     path("register/", RegisterView.as_view(), name="register"),
+    path("verify-email/", EmailVerificationView.as_view(), name="verify_email"),
+    path(
+        "resend-verification/",
+        ResendEmailVerificationView.as_view(),
+        name="resend_verification",
+    ),
     path("password-reset/", PasswordResetRequestView.as_view(), name="password_reset"),
     path(
         "password-reset/confirm/",

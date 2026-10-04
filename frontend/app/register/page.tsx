@@ -2,18 +2,19 @@
 
 import { FormEvent, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { getPostAuthRedirect } from "@/lib/route-auth";
+import { resendEmailVerification } from "@/lib/api";
 
 export default function RegisterPage() {
-  const router = useRouter();
   const { signUp } = useAuth();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [registered, setRegistered] = useState(false);
+  const [resendMessage, setResendMessage] = useState("");
+  const [resendLoading, setResendLoading] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -23,8 +24,7 @@ export default function RegisterPage() {
 
     try {
       await signUp(username, email, password);
-      const next = new URLSearchParams(window.location.search).get("next");
-      router.replace(getPostAuthRedirect(next));
+      setRegistered(true);
     } catch (error) {
       setError(
         error instanceof Error
@@ -33,6 +33,21 @@ export default function RegisterPage() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleResend() {
+    setResendLoading(true);
+    setResendMessage("");
+    try {
+      await resendEmailVerification(email);
+      setResendMessage(
+        "If the account needs verification, a verification link will be sent."
+      );
+    } catch {
+      setResendMessage("We could not process the request. Please try again.");
+    } finally {
+      setResendLoading(false);
     }
   }
 
@@ -70,6 +85,30 @@ export default function RegisterPage() {
             </p>
           </div>
 
+          {registered ? (
+            <div className="space-y-5">
+              <div role="status" className="rounded-xl bg-emerald-950/40 p-4 text-sm text-emerald-300">
+                <h3 className="font-semibold text-white">Check your email</h3>
+                <p className="mt-2">
+                  We sent a verification link to <strong>{email}</strong>. Verify
+                  your email before signing in.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={resendLoading}
+                className="w-full rounded-xl border border-slate-700 py-3 font-semibold text-white transition hover:border-[#3B82F6] disabled:opacity-50"
+              >
+                {resendLoading ? "Sending..." : "Resend verification email"}
+              </button>
+              {resendMessage && (
+                <p role="status" className="text-center text-sm text-slate-300">
+                  {resendMessage}
+                </p>
+              )}
+            </div>
+          ) : (
           <form onSubmit={handleSubmit} className="space-y-5">
 
             {/* Username */}
@@ -158,6 +197,7 @@ export default function RegisterPage() {
               {loading ? "Creating account..." : "Create Account"}
             </button>
           </form>
+          )}
 
           {/* Login */}
           <p className="mt-7 text-center text-sm text-slate-400">

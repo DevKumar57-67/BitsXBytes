@@ -8,6 +8,7 @@ from django.core import mail
 from django.test import override_settings
 from django.urls import reverse
 from django.utils.encoding import force_bytes
+from django.utils import timezone
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
@@ -27,6 +28,8 @@ class AuthenticationFlowTests(APITestCase):
 		self.logout_url = reverse("logout")
 		self.password_reset_url = reverse("password_reset")
 		self.password_reset_confirm_url = reverse("password_reset_confirm")
+		self.verify_email_url = reverse("verify_email")
+		self.resend_verification_url = reverse("resend_verification")
 		self.password = "S3cure!Raven-Tree-419"
 
 	def create_user(self, username="student", email="student@example.com"):
@@ -72,6 +75,172 @@ class AuthenticationFlowTests(APITestCase):
 		user = User.objects.get(username="student")
 		self.assertNotEqual(user.password, self.password)
 		self.assertTrue(user.check_password(self.password))
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_registration_sends_link_and_creates_unverified_user(self):
+		response = self.client.post(
+			self.register_url,
+			{
+				"username": "newstudent",
+				"email": "newstudent@example.com",
+				"password": self.password,
+			},
+		)
+		user = User.objects.get(username="newstudent")
+
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		self.assertFalse(user.email_verified)
+		self.assertEqual(len(mail.outbox), 1)
+		self.assertEqual(mail.outbox[0].to, [user.email])
+		self.assertIn("/verify-email#token=", mail.outbox[0].body)
+
+	def verification_token_from_email(self):
+		link = next(
+			word
+			for word in mail.outbox[-1].body.split()
+			if "/verify-email#token=" in word
+		)
+		return parse_qs(urlsplit(link).fragment)["token"][0]
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_verification_token_verifies_account_and_replay_is_safe(self):
+		self.client.post(
+			self.register_url,
+			{
+				"username": "newstudent",
+				"email": "newstudent@example.com",
+				"password": self.password,
+			},
+		)
+		token = self.verification_token_from_email()
+
+		response = self.client.post(self.verify_email_url, {"token": token})
+		replay = self.client.post(self.verify_email_url, {"token": token})
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data["status"], "verified")
+		self.assertTrue(User.objects.get(username="newstudent").email_verified)
+		self.assertEqual(replay.status_code, status.HTTP_200_OK)
+		self.assertEqual(replay.data["status"], "already_verified")
+		login = self.client.post(
+			self.login_url,
+			{"username": "newstudent", "password": self.password},
+		)
+		self.assertEqual(login.status_code, status.HTTP_200_OK)
+
+	def test_verification_rejects_invalid_and_expired_tokens(self):
+		invalid = self.client.post(self.verify_email_url, {"token": "invalid"})
+		self.assertEqual(invalid.status_code, status.HTTP_400_BAD_REQUEST)
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_verification_rejects_expired_token(self):
+		self.client.post(
+			self.register_url,
+			{
+				"username": "newstudent",
+				"email": "newstudent@example.com",
+				"password": self.password,
+			},
+		)
+		token = self.verification_token_from_email()
+
+		with override_settings(EMAIL_VERIFICATION_TIMEOUT=-1):
+			response = self.client.post(self.verify_email_url, {"token": token})
+
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertFalse(User.objects.get(username="newstudent").email_verified)
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_resending_invalidates_previous_verification_token(self):
+		self.client.post(
+			self.register_url,
+			{
+				"username": "newstudent",
+				"email": "newstudent@example.com",
+				"password": self.password,
+			},
+		)
+		old_token = self.verification_token_from_email()
+		user = User.objects.get(username="newstudent")
+		user.email_verification_last_sent_at = timezone.now() - timedelta(minutes=2)
+		user.save(update_fields=["email_verification_last_sent_at"])
+
+		self.client.post(self.resend_verification_url, {"email": user.email})
+		new_token = self.verification_token_from_email()
+		old_response = self.client.post(
+			self.verify_email_url,
+			{"token": old_token},
+		)
+		new_response = self.client.post(
+			self.verify_email_url,
+			{"token": new_token},
+		)
+
+		self.assertEqual(len(mail.outbox), 2)
+		self.assertEqual(old_response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertEqual(new_response.data["status"], "verified")
+
+	@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+	def test_resend_response_is_generic_and_account_interval_limits_email(self):
+		user = self.create_user()
+		user.email_verified = False
+		user.email_verification_last_sent_at = timezone.now()
+		user.save(update_fields=["email_verified", "email_verification_last_sent_at"])
+
+		existing = self.client.post(
+			self.resend_verification_url,
+			{"email": user.email},
+		)
+		unknown = self.client.post(
+			self.resend_verification_url,
+			{"email": "missing@example.com"},
+		)
+
+		self.assertEqual(existing.status_code, status.HTTP_200_OK)
+		self.assertEqual(unknown.status_code, status.HTTP_200_OK)
+		self.assertEqual(existing.data, unknown.data)
+		self.assertEqual(len(mail.outbox), 0)
+
+	def test_login_rejects_unverified_user_and_allows_verified_user(self):
+		user = self.create_user()
+		user.email_verified = False
+		user.save(update_fields=["email_verified"])
+
+		rejected = self.client.post(
+			self.login_url,
+			{"username": "student", "password": self.password},
+		)
+		self.assertEqual(rejected.status_code, status.HTTP_401_UNAUTHORIZED)
+		self.assertIn("verify your email", str(rejected.data).lower())
+		self.assertNotIn(settings.AUTH_REFRESH_COOKIE_NAME, rejected.cookies)
+
+		user.email_verified = True
+		user.save(update_fields=["email_verified"])
+		accepted = self.client.post(
+			self.login_url,
+			{"username": "student", "password": self.password},
+		)
+		self.assertEqual(accepted.status_code, status.HTTP_200_OK)
+
+	def test_unverified_user_cannot_use_previously_issued_access_token(self):
+		user = self.create_user()
+		tokens = self.login()
+		user.email_verified = False
+		user.save(update_fields=["email_verified"])
+		self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+
+		response = self.client.get(self.me_url)
+
+		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+	def test_verification_endpoints_require_csrf(self):
+		client = APIClient(enforce_csrf_checks=True)
+		for url, data in (
+			(self.verify_email_url, {"token": "invalid"}),
+			(self.resend_verification_url, {"email": "student@example.com"}),
+		):
+			response = client.post(url, data)
+			self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 	def test_register_rejects_duplicate_username(self):
 		self.create_user()

@@ -252,8 +252,9 @@ memory only. The refresh token is issued only as the `bxb_refresh` HttpOnly
 cookie; it is never returned in JSON or stored in browser storage. Reloading
 the app refreshes the access token through that cookie. Registration, login,
 refresh, and logout require a CSRF token from `/api/auth/csrf/` and send it in
-the `X-CSRFToken` header. Refresh rotates and blacklists old refresh tokens;
-logout blacklists the cookie token and expires the cookie.
+the `X-CSRFToken` header. Email verification and resend requests use the same
+CSRF protection. Refresh rotates and blacklists old refresh tokens; logout
+blacklists the cookie token and expires the cookie.
 
 The frontend and API use credentialed CORS with explicit allowed origins. Keep
 them on the same site and use `AUTH_COOKIE_SAMESITE=Lax` where possible. For a
@@ -272,6 +273,14 @@ cookie. Access tokens are bound to a keyed password-version fingerprint, so
 tokens issued before a password reset are rejected immediately. In development,
 reset emails are written only to the local Django console; production should
 configure SMTP credentials through environment variables.
+
+New registrations start unverified and receive a signed email link that expires
+after `EMAIL_VERIFICATION_TIMEOUT` seconds (24 hours by default). Verification
+is required before login or authenticated API access; existing accounts remain
+verified during the migration. The resend endpoint returns a generic response,
+limits each account to one send per `EMAIL_VERIFICATION_RESEND_INTERVAL`
+seconds, and also applies an IP-based DRF throttle. Development uses Django's
+console email backend, so verification links appear in the backend terminal.
 
 ```text
                     AUTHENTICATION

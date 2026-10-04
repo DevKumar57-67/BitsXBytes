@@ -182,12 +182,24 @@ if not FRONTEND_URL:
 if not DEBUG and not FRONTEND_URL.startswith("https://"):
     raise ImproperlyConfigured("FRONTEND_URL must use HTTPS when DEBUG is disabled.")
 PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "3600"))
+EMAIL_VERIFICATION_TIMEOUT = int(
+    os.getenv("EMAIL_VERIFICATION_TIMEOUT", "86400")
+)
+EMAIL_VERIFICATION_RESEND_INTERVAL = int(
+    os.getenv("EMAIL_VERIFICATION_RESEND_INTERVAL", "60")
+)
 
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "authentication.backends.PasswordAwareJWTAuthentication",
     ),
+    "DEFAULT_THROTTLE_RATES": {
+        "email_verification_resend": os.getenv(
+            "EMAIL_VERIFICATION_RESEND_RATE",
+            "10/hour",
+        ),
+    },
 }
 
 CORS_ALLOWED_ORIGINS = _csv_environment_variable(

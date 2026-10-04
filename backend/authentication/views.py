@@ -1,12 +1,16 @@
 import logging
+from datetime import timedelta
 from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.conf import settings
 from django.core.mail import send_mail
+from django.core import signing
 from django.db import transaction
+from django.db.models import Q
 from django.middleware.csrf import get_token
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -14,6 +18,7 @@ from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings
@@ -25,11 +30,16 @@ from .serializers import (
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     PasswordAwareTokenObtainPairSerializer,
+    EmailVerificationSerializer,
     RegisterSerializer,
 )
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+EMAIL_VERIFICATION_SALT = "bitsxbytes.email-verification"
+EMAIL_VERIFICATION_RESEND_INTERVAL = timedelta(
+    seconds=settings.EMAIL_VERIFICATION_RESEND_INTERVAL
+)
 
 
 def set_refresh_cookie(response, token):
@@ -61,6 +71,169 @@ def clear_refresh_cookie(response):
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        user.email_verification_last_sent_at = timezone.now()
+        user.save(update_fields=["email_verification_last_sent_at"])
+        send_verification_email(user)
+        return Response(
+            {"detail": "Check your email for a verification link."},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+def send_verification_email(user):
+    sent_at = user.email_verification_last_sent_at
+    if sent_at is None:
+        return
+
+    token = signing.dumps(
+        {
+            "user_id": user.pk,
+            "email": user.email,
+            "sent_at": sent_at.isoformat(),
+        },
+        salt=EMAIL_VERIFICATION_SALT,
+    )
+    verification_url = f"{settings.FRONTEND_URL}/verify-email#token={token}"
+    message = (
+        "Welcome to BitsXBytes.\n\n"
+        "Verify your email address using this link within "
+        f"{settings.EMAIL_VERIFICATION_TIMEOUT // 3600} hours:\n"
+        f"{verification_url}\n\n"
+        "If you did not create this account, you can ignore this email."
+    )
+    try:
+        send_mail(
+            subject="Verify your BitsXBytes email",
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+        )
+    except Exception:
+        logger.warning("Email verification message delivery failed.")
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class EmailVerificationView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = EmailVerificationSerializer
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "This verification link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payload = signing.loads(
+                serializer.validated_data["token"],
+                salt=EMAIL_VERIFICATION_SALT,
+                max_age=settings.EMAIL_VERIFICATION_TIMEOUT,
+            )
+            user = User._default_manager.get(
+                pk=payload["user_id"],
+                email=payload["email"],
+            )
+            token_sent_at = payload["sent_at"]
+        except (
+            signing.BadSignature,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            User.DoesNotExist,
+        ):
+            return Response(
+                {"detail": "This verification link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if user.email_verified:
+            return Response(
+                {"status": "already_verified"},
+                status=status.HTTP_200_OK,
+            )
+        sent_at = user.email_verification_last_sent_at
+        if sent_at is None or sent_at.isoformat() != token_sent_at:
+            return Response(
+                {"detail": "This verification link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        changed = User._default_manager.filter(
+            pk=user.pk,
+            email_verified=False,
+            email_verification_last_sent_at=sent_at,
+        ).update(email_verified=True)
+        if not changed:
+            user.refresh_from_db()
+            if user.email_verified:
+                return Response(
+                    {"status": "already_verified"},
+                    status=status.HTTP_200_OK,
+                )
+            return Response(
+                {"detail": "This verification link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({"status": "verified"}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class ResendEmailVerificationView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "email_verification_resend"
+
+    def post(self, request):
+        email = request.data.get("email") if hasattr(request.data, "get") else None
+        if isinstance(email, str) and len(email) <= 254:
+            normalized_email = email.strip()
+            now = timezone.now()
+            eligible = User._default_manager.filter(
+                email__iexact=normalized_email,
+                email_verified=False,
+                is_active=True,
+            ).filter(
+                Q(email_verification_last_sent_at__isnull=True)
+                | Q(
+                    email_verification_last_sent_at__lte=(
+                        now - EMAIL_VERIFICATION_RESEND_INTERVAL
+                    )
+                )
+            ).first()
+            if eligible:
+                updated = User._default_manager.filter(
+                    pk=eligible.pk,
+                    email_verified=False,
+                ).filter(
+                    Q(email_verification_last_sent_at__isnull=True)
+                    | Q(
+                        email_verification_last_sent_at__lte=(
+                            now - EMAIL_VERIFICATION_RESEND_INTERVAL
+                        )
+                    )
+                ).update(email_verification_last_sent_at=now)
+                if updated:
+                    eligible.email_verification_last_sent_at = now
+                    send_verification_email(eligible)
+
+        return Response(
+            {
+                "detail": (
+                    "If the account needs verification, a verification link "
+                    "will be sent."
+                )
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 @method_decorator(csrf_protect, name="dispatch")
