@@ -1,9 +1,13 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { login } from "@/lib/api";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const { signIn } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -16,11 +20,8 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const data = await login(username, password);
-
-      console.log("Login successful:", data);
-
-      alert("Login successful!");
+      await signIn(username, password);
+      router.replace("/");
     } catch (error) {
       setError(
         error instanceof Error
@@ -45,37 +46,41 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="mb-2 block text-sm font-medium">
+            <label htmlFor="username" className="mb-2 block text-sm font-medium">
               Username
             </label>
 
             <input
               type="text"
+              id="username"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               required
+              autoComplete="username"
               className="w-full rounded-lg border px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Enter your username"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium">
+            <label htmlFor="password" className="mb-2 block text-sm font-medium">
               Password
             </label>
 
             <input
               type="password"
+              id="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               required
+              autoComplete="current-password"
               className="w-full rounded-lg border px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Enter your password"
             />
           </div>
 
           {error && (
-            <p className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+            <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
               {error}
             </p>
           )}
@@ -88,6 +93,13 @@ export default function LoginPage() {
             {loading ? "Signing in..." : "Sign In"}
           </button>
         </form>
+
+        <p className="mt-6 text-center text-sm text-gray-500">
+          Don&apos;t have an account?{" "}
+          <Link href="/register" className="font-semibold text-blue-600 hover:text-blue-700">
+            Create one
+          </Link>
+        </p>
       </div>
     </main>
   );
